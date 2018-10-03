@@ -21,37 +21,25 @@ def dbx(c, s):
         return None
 #end exec
 
-log("Itsy bitsy spider is crawling again")
 try:
-    tot = 0
-    redirs = 0
-    skips = 0
     root = "genprogress.org"
 
-    dbc = lite.connect('./gp.db')
-    c = dbc.cursor()
-
-    dbx(c, "drop table todo")
-    dbx(c, "drop table skip")
-    dbx(c, "drop table redir")
-    dbx(c, "create table todo (url text primary key, flag int)") # flag = done ? T : F
-    dbx(c, "create table skip (url text primary key, flag int)") # flag = external ? T : F
-    dbx(c, "create table redir (url text primary key, dest text)") # 301 / 302
-    dbx(c, "insert into todo values('http://genprogress.org', 0)") # seed
-    log("Database is ready and seeded")
+    wdb = lite.connect('./gp.db', isolation_level=None)
+    rdb = lite.connect('./gp.db', isolation_level=None)
+    wdb.execute('pragma journal_mode=wal;')
+    rdb.execute('pragma journal_mode=wal;')
+    wc = wdb.cursor()
+    rc = rdb.cursor()
 
     while True:
         try:
-            dbc.commit() # help clear inmem cache
-            dbx(c, "select url from todo where flag=0 limit 1")
-            r = c.fetchone()
+            dbx(rc, "select url from todo where flag=0 limit 1")
+            r = rc.fetchone()
             if r == None:
-                log("End of the road at depth = " + `tot`)
+                open(x, './done.txt').close()
                 break;
-
-            tot += 1
             l = r[0]
-            dbx(c, 'update todo set flag=1 where url="%s"' %(l))
+            dbx(wc, 'update todo set flag=1 where url="%s"' %(l))
             log("processing " + l)
 
             # GET=>read content into page and http code into code=>close http
@@ -62,15 +50,17 @@ try:
             conn.close()
 
             if url <> l: #if a redir
-                redirs += 1
-                dbx(c, 'insert or ignore into redir values("%s", "%s")' %(l, url)) #record redir
-                dbx(c, 'insert or ignore into todo values("%s", 0)' %(url)) # add dest to todo if not already included
+                dbx(wc, 'insert or ignore into redir values("%s", "%s")' %(l, url)) #record redir
+                if urlparse(url).netloc.endswith(root):
+                    dbx(wc, 'insert or ignore into todo values("%s", 0)' %(url)) # add dest to todo if not already included
+                else:
+                    dbx(wc, 'insert or ignore into skip values("%s", 1)' %(url))
+                    log("\tNot crawling external link: " + url)
                 log("\tForwarding %s to %s" %(l, url))
                 continue
 
             if not urlparse(l).netloc.endswith(root): # record external ref and skip
-                skips += 1
-                dbx(c, 'insert or ignore into skip values("%s", 1)' %(l))
+                dbx(wc, 'insert or ignore into skip values("%s", 1)' %(l))
                 log("\tNot crawling external link: " + url)
                 continue
 
@@ -81,12 +71,15 @@ try:
                 except UnicodeError:
                     s = hrefs['href'].encode('ascii', 'replace')
                     l = urljoin(url, s)
-                dbx(c, 'insert or ignore into todo values("%s", 0)' %(l)) #add link to todo if not already included
+                if urlparse(l).netloc.endswith(root):
+                    dbx(wc, 'insert or ignore into todo values("%s", 0)' %(l)) #add link to todo if not already included
         except Exception, e:
             log("\tError: %s [%s]" %(l, `e`))
-            dbx(c, 'insert or ignore into skip values("%s", 0)' %(l)) #record bad http calls
+            dbx(wc, 'insert or ignore into skip values("%s", 0)' %(l)) #record bad http calls
 #end while:
-    c.close()
+    wdb.close()
+    rdb.close()
+
     log("\nCreepy spider is dead!")
     sys.exit(0) #exit with success
 except Exception, e:
